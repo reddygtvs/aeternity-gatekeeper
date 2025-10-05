@@ -23,7 +23,31 @@ app.post('/api/analyze-image', async (req, res) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.0-flash-exp:free',
+        model: OPENROUTER_MODEL,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe this person in detail for image generation: face shape, skin tone, hair (color, style, length), facial features (eyes, nose, mouth), body type, outfit (colors, materials, style, logos, specific items). Be extremely detailed and specific.' },
+            { type: 'image_url', image_url: { url: imageDataUrl } }
+          ]
+        }],
+        max_tokens: 300,
+        reasoning: { exclude: true }
+      })
+    })
+    const data = await r.json()
+    let fullDescription = data.choices?.[0]?.message?.content || 'person in casual outfit'
+    fullDescription = fullDescription.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+
+    // Also get short outfit description for conversation
+    const outfitR = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
         messages: [{
           role: 'user',
           content: [
@@ -31,51 +55,79 @@ app.post('/api/analyze-image', async (req, res) => {
             { type: 'image_url', image_url: { url: imageDataUrl } }
           ]
         }],
-        max_tokens: 100
+        max_tokens: 100,
+        reasoning: { exclude: true }
       })
     })
-    const data = await r.json()
-    res.json({ description: data.choices?.[0]?.message?.content || 'casual outfit' })
+    const outfitData = await outfitR.json()
+    let outfitDescription = outfitData.choices?.[0]?.message?.content || 'casual outfit'
+    outfitDescription = outfitDescription.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+
+    res.json({
+      description: outfitDescription,
+      fullDescription: fullDescription
+    })
   } catch (e: any) {
     console.error(e)
-    res.json({ description: 'casual outfit' })
+    res.json({
+      description: 'casual outfit',
+      fullDescription: 'person in casual outfit'
+    })
   }
 })
 
-// ---- Scrape website info ----
+// ---- Scrape website info (exhaustive + raw HTML) ----
 app.post('/api/analyze-website', async (req, res) => {
   try {
     const { url } = req.body
-    const html = await fetch(url).then(r => r.text())
+
+    // Proper timeout implementation with AbortController
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
+
+    const fetchRes = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: controller.signal
+    })
+
+    clearTimeout(timeoutId)
+
+    if (!fetchRes.ok) {
+      return res.json({
+        title: '',
+        description: '',
+        rawHtml: '',
+        error: `site returned ${fetchRes.status}`
+      })
+    }
+
+    const html = await fetchRes.text()
 
     // Extract metadata
     const title = html.match(/<title>(.*?)<\/title>/i)?.[1] || ''
     const description = html.match(/<meta name="description" content="(.*?)"/i)?.[1] || ''
 
-    // Extract text content from common elements
+    // Extract body HTML (keep structure for LLM)
     const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i)
     let bodyHtml = bodyMatch ? bodyMatch[1] : html
 
-    // Remove script and style tags
+    // Only remove scripts and styles (keep structure, links, classes)
     bodyHtml = bodyHtml.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
     bodyHtml = bodyHtml.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    bodyHtml = bodyHtml.replace(/<!--[\s\S]*?-->/g, '')
 
-    // Extract text from headings and paragraphs
-    const headings = [...bodyHtml.matchAll(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/gi)]
-      .map(m => m[1].replace(/<[^>]+>/g, '').trim())
-      .filter(Boolean)
+    // Limit to 8000 chars of HTML (vision model can handle it)
+    const rawHtml = bodyHtml.slice(0, 8000)
 
-    const paragraphs = [...bodyHtml.matchAll(/<p[^>]*>(.*?)<\/p>/gi)]
-      .map(m => m[1].replace(/<[^>]+>/g, '').trim())
-      .filter(Boolean)
+    // Extract text for summary
+    const allText = bodyHtml
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 5000)
 
-    // Combine content (limit to first 2000 chars to avoid token limits)
-    const contentPreview = [...headings.slice(0, 5), ...paragraphs.slice(0, 10)]
-      .join(' ')
-      .slice(0, 2000)
-
-    // Use LLM to summarize the website content
-    if (contentPreview.length > 50) {
+    // Use LLM to extract key details
+    if (allText.length > 50) {
       const summaryRes = await fetch(OPENROUTER_URL, {
         method: 'POST',
         headers: {
@@ -86,25 +138,42 @@ app.post('/api/analyze-website', async (req, res) => {
           model: OPENROUTER_MODEL,
           messages: [{
             role: 'user',
-            content: `Summarize what this person/company does in 1-2 sentences based on their website:\n\nTitle: ${title}\n\nContent: ${contentPreview}`
+            content: `Extract key details from this website for roasting. List:
+1. What they built/shipped (specific projects, apps, tools)
+2. Their tech stack or skills
+3. Any cringey buzzwords or claims
+4. Anything notable
+
+Website: ${title}
+Content: ${allText}`
           }],
-          max_tokens: 150,
+          max_tokens: 300,
           reasoning: { exclude: true }
         })
       })
       const summaryData = await summaryRes.json()
       let summary = summaryData.choices?.[0]?.message?.content || description || title
-
-      // Strip any remaining <think> tags
       summary = summary.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
 
-      res.json({ title, description: summary })
+      res.json({ title, description: summary, rawHtml })
     } else {
-      res.json({ title, description })
+      res.json({ title, description, rawHtml })
     }
   } catch (e: any) {
-    console.error(e)
-    res.json({ title: '', description: '' })
+    console.error('Website fetch error:', e.message)
+
+    let errorMsg = 'site timed out'
+    if (e.code === 'ENOTFOUND') errorMsg = 'site not found'
+    else if (e.name === 'AbortError') errorMsg = 'site timed out'
+    else if (e.code === 'ECONNREFUSED') errorMsg = 'connection refused'
+    else if (!e.code && !e.name) errorMsg = e.message || 'unknown error'
+
+    res.json({
+      title: '',
+      description: '',
+      rawHtml: '',
+      error: errorMsg
+    })
   }
 })
 
@@ -151,39 +220,133 @@ app.post('/api/chat', async (req, res) => {
   }
 })
 
-// ---- Aeternity: mint Admit (testnet) ----
+// ---- Aeternity: payment verification ----
 const NODE_URL = process.env.AE_NODE_URL || 'https://testnet.aeternity.io'
-const CONTRACT_ID = process.env.AE_CONTRACT_ID // deploy once, set here
+const EVENT_RECEIVER = process.env.EVENT_RECEIVER
 
-app.post('/api/mint', async (req, res) => {
+// Simple in-memory payment verification (for hackathon)
+const verifiedPayments = new Map()
+
+app.post('/api/payment/verify', async (req, res) => {
   try {
-    const { ownerAddress, handleHash, score, cardUri } = req.body
+    const { txHash, expectedAmountAE, payer } = req.body
 
-    if (!process.env.AE_PRIVATE_KEY) {
-      return res.status(400).json({ error: 'Missing AE_PRIVATE_KEY in environment' })
+    // Validate inputs
+    if (!txHash || !expectedAmountAE || !payer) {
+      return res.status(400).json({ error: 'Missing txHash, expectedAmountAE, or payer' })
     }
 
-    if (!CONTRACT_ID) {
-      return res.status(400).json({ error: 'Missing AE_CONTRACT_ID in environment' })
+    // Check range
+    if (expectedAmountAE < 0.001 || expectedAmountAE > 0.5) {
+      return res.status(400).json({ error: 'Amount must be between 0.001 and 0.5 AE' })
+    }
+
+    // Check if already verified
+    if (verifiedPayments.has(txHash)) {
+      return res.json({ ok: true, txHash, amountAE: expectedAmountAE, alreadyVerified: true })
     }
 
     const sdk = new AeSdk({
-      nodes: [{ name: 'testnet', instance: new Node(NODE_URL) }],
-      accounts: [new MemoryAccount(process.env.AE_PRIVATE_KEY)]
+      nodes: [{ name: 'testnet', instance: new Node(NODE_URL) }]
     })
 
-    const contract = await sdk.getContractInstance({
-      contractAddress: CONTRACT_ID
-    })
+    // Fetch transaction
+    const tx = await sdk.api.getTransactionByHash(txHash)
 
-    const { decodedResult } = await contract.call(
-      'mint_admit',
-      [ownerAddress, handleHash, score, cardUri]
-    )
+    // Check it's a spend transaction
+    if (tx.tx.type !== 'SpendTx') {
+      return res.status(400).json({ error: 'Transaction is not a SpendTx' })
+    }
 
-    return res.json({ tokenId: decodedResult })
+    // Convert expected amount to aettos
+    const expectedAettos = BigInt(Math.round(expectedAmountAE * 1e18))
+
+    // Verify transaction details
+    if (tx.tx.recipientId !== EVENT_RECEIVER) {
+      return res.status(400).json({ error: 'Payment not sent to event receiver' })
+    }
+
+    if (BigInt(tx.tx.amount) !== expectedAettos) {
+      return res.status(400).json({ error: `Amount mismatch. Expected ${expectedAmountAE} AE, got ${Number(tx.tx.amount) / 1e18} AE` })
+    }
+
+    if (tx.tx.senderId !== payer) {
+      return res.status(400).json({ error: 'Sender does not match provided payer address' })
+    }
+
+    // Store verification
+    verifiedPayments.set(txHash, { payer, amountAE: expectedAmountAE, ts: Date.now() })
+
+    return res.json({ ok: true, txHash, amountAE: expectedAmountAE })
   } catch (e: any) {
-    console.error(e)
+    console.error('Payment verification error:', e)
+    return res.status(500).json({ error: e.message })
+  }
+})
+
+// ---- Generate badge with Nano Banana ----
+app.post('/api/generate-badge', async (req, res) => {
+  try {
+    const { personDescription, amountAE, eventName } = req.body
+
+    if (!process.env.GOOGLE_API_KEY) {
+      return res.status(400).json({ error: 'Missing GOOGLE_API_KEY in environment' })
+    }
+
+    const prompt = `Create a stylized pixelated NFT badge in retro 8-bit pixel art style.
+
+PERSON: ${personDescription}
+
+DESIGN REQUIREMENTS:
+- Pixel art / 8-bit retro game aesthetic (like CryptoPunks or early Nintendo characters)
+- Square format, clean composition
+- At the TOP: "${amountAE} AETERNITY" in bold pixelated text
+- At the BOTTOM: "${eventName || 'FRONTIER TOWER'}" in stylized pixel font
+- Center: The person as a recognizable pixel art character
+- Color palette: vibrant but limited (8-16 colors max for authentic pixel art feel)
+- Sharp edges, no anti-aliasing (true pixel art style)
+- Background: solid color or simple geometric pattern
+- Make it look like a collectible trading card or game character sprite
+
+Style: retro pixel art, 8-bit, CryptoPunk aesthetic, sharp pixels, limited color palette`
+
+    const imageGenUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent`
+
+    const r = await fetch(imageGenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': process.env.GOOGLE_API_KEY
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: prompt }
+          ]
+        }]
+      })
+    })
+
+    const data = await r.json()
+
+    if (!r.ok) {
+      console.error('Imagen API error:', data)
+      return res.status(500).json({ error: data.error?.message || 'Image generation failed' })
+    }
+
+    // Gemini returns inline data in candidates[0].content.parts[0].inlineData
+    const inlineData = data.candidates?.[0]?.content?.parts?.[0]?.inlineData
+
+    if (!inlineData || !inlineData.data) {
+      console.error('No image data in response:', JSON.stringify(data, null, 2))
+      return res.status(500).json({ error: 'No image returned from API' })
+    }
+
+    const imageDataUrl = `data:${inlineData.mimeType};base64,${inlineData.data}`
+
+    return res.json({ badgeImage: imageDataUrl })
+  } catch (e: any) {
+    console.error('Badge generation error:', e)
     return res.status(500).json({ error: e.message })
   }
 })

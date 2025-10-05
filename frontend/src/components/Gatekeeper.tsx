@@ -26,6 +26,10 @@ export default function Gatekeeper({ form }: { form: FormData }) {
   const [conversation, setConversation] = useState<Array<{role: string, text: string}>>([])
   const [analyzing, setAnalyzing] = useState(true)
   const [loading, setLoading] = useState(false)
+  const [paymentRequest, setPaymentRequest] = useState<{amount: number, payer: string, memo: string} | null>(null)
+  const [txHash, setTxHash] = useState('')
+  const [paymentStatus, setPaymentStatus] = useState('')
+  const [personDescription, setPersonDescription] = useState('')
 
   useEffect(() => {
     if (!initialized.current) {
@@ -36,6 +40,22 @@ export default function Gatekeeper({ form }: { form: FormData }) {
 
   async function init() {
     setAnalyzing(true)
+
+    // Get detailed person description from photo
+    if (form.photo) {
+      try {
+        const r = await fetch(import.meta.env.VITE_BACKEND_URL + '/api/analyze-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageDataUrl: form.photo })
+        })
+        const data = await r.json()
+        setPersonDescription(data.fullDescription || 'person in casual outfit')
+      } catch (e) {
+        console.error('Image analysis failed:', e)
+        setPersonDescription('person in casual outfit')
+      }
+    }
 
     // Get website summary
     let siteInfo = ''
@@ -48,7 +68,7 @@ export default function Gatekeeper({ form }: { form: FormData }) {
           body: JSON.stringify({ url })
         })
         const data = await r.json()
-        siteInfo = data.title || data.description || form.about
+        siteInfo = data.description || data.title || form.about
       } catch (e) {
         console.error('Website analysis failed:', e)
         siteInfo = form.about
@@ -109,8 +129,32 @@ export default function Gatekeeper({ form }: { form: FormData }) {
     try {
       setLoading(true)
 
-      // Build new message (always text-only after first)
-      const userMessage: Message = { role: 'user', content: text }
+      // Detect URLs in user message
+      const urlMatch = text.match(/https?:\/\/[^\s]+/i)
+      let enhancedContent = text
+
+      if (urlMatch) {
+        const url = urlMatch[0]
+        try {
+          const r = await fetch(import.meta.env.VITE_BACKEND_URL + '/api/analyze-website', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+          })
+          const data = await r.json()
+
+          if (data.error) {
+            enhancedContent = `${text}\n\n[system: tried to fetch ${url} but ${data.error}]`
+          } else if (data.rawHtml) {
+            enhancedContent = `${text}\n\n[system: HTML from ${url}]\n<html>\n${data.rawHtml}\n</html>`
+          }
+        } catch (e) {
+          enhancedContent = `${text}\n\n[system: couldn't fetch ${url}, site might be down]`
+        }
+      }
+
+      // Build new message with enhanced content
+      const userMessage: Message = { role: 'user', content: enhancedContent }
       const newMessages = [...messages, userMessage]
 
       const reply = await chat(newMessages)
@@ -119,6 +163,15 @@ export default function Gatekeeper({ form }: { form: FormData }) {
       setConversation(prev => [...prev, { role: 'bouncer', text: reply }])
       speak(reply)
       setTurn(prev => prev + 1)
+
+      // Check for payment tool call
+      const toolMatch = reply.match(/\{\{DEBIT_TOKENS\s+amount_ae:\s*([0-9]*\.?[0-9]+),\s*payer:\s*"(ak_[^"]+)",\s*memo:\s*"([^"]+)"\s*\}\}/i)
+      if (toolMatch) {
+        const amount = parseFloat(toolMatch[1])
+        const payer = toolMatch[2]
+        const memo = toolMatch[3]
+        setPaymentRequest({ amount, payer, memo })
+      }
 
       // Check acceptance
       if (turn >= 8 && shouldAccept(score, turn)) {
@@ -140,6 +193,58 @@ export default function Gatekeeper({ form }: { form: FormData }) {
     } else {
       setListening(true)
       startSTT((text) => setUserInput(text))
+    }
+  }
+
+  async function verifyPayment() {
+    if (!txHash.trim() || !paymentRequest) return
+
+    try {
+      setPaymentStatus('Verifying payment...')
+      const r = await fetch(import.meta.env.VITE_BACKEND_URL + '/api/payment/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          txHash: txHash.trim(),
+          expectedAmountAE: paymentRequest.amount,
+          payer: paymentRequest.payer
+        })
+      })
+      const data = await r.json()
+
+      if (!r.ok || !data.ok) {
+        setPaymentStatus(`Error: ${data.error || 'Payment verification failed'}`)
+        return
+      }
+
+      setPaymentStatus('Payment verified! Generating your badge...')
+
+      // Generate badge with Nano Banana
+      const badgeR = await fetch(import.meta.env.VITE_BACKEND_URL + '/api/generate-badge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          personDescription: personDescription,
+          amountAE: paymentRequest.amount,
+          eventName: 'FRONTIER TOWER'
+        })
+      })
+      const badgeData = await badgeR.json()
+
+      if (!badgeR.ok) {
+        setPaymentStatus(`Error: ${badgeData.error || 'Badge generation failed'}`)
+        return
+      }
+
+      setPaymentStatus('Success! Badge generated.')
+      setAccepted(true)
+      setBadge({
+        portrait: badgeData.badgeImage,
+        tagline: `Paid ${paymentRequest.amount} AETERNITY`,
+        score: 0.8
+      })
+    } catch (e: any) {
+      setPaymentStatus(`Error: ${e.message}`)
     }
   }
 
@@ -189,17 +294,53 @@ export default function Gatekeeper({ form }: { form: FormData }) {
           placeholder="Type your response..."
           className="flex-1 min-h-20 max-h-40 resize-y"
           rows={3}
-          disabled={loading}
+          disabled={loading || !!paymentRequest}
         />
         <div className="flex flex-col gap-2">
-          <button onClick={toggleVoice} className={listening ? 'bg-red-500' : ''} disabled={loading}>
+          <button onClick={toggleVoice} className={listening ? 'bg-red-500' : ''} disabled={loading || !!paymentRequest}>
             {listening ? '🔴 Stop' : '🎤 Voice'}
           </button>
-          <button onClick={sendMessage} disabled={loading || !userInput.trim()}>
+          <button onClick={sendMessage} disabled={loading || !userInput.trim() || !!paymentRequest}>
             Send
           </button>
         </div>
       </div>
+
+      {paymentRequest && (
+        <div className="mt-4 p-4 border rounded-xl bg-gray-50">
+          <div className="text-lg font-bold mb-2">Payment Required</div>
+          <div className="space-y-2 text-sm">
+            <div><strong>Amount:</strong> {paymentRequest.amount} AE</div>
+            <div><strong>Send to:</strong> <code className="bg-white p-1 rounded">{process.env.VITE_EVENT_RECEIVER || 'ak_2VvB4fFu2uvBwAu5EvxcWHFJHPcJWR3BVpPCLVpZWZfUbhDu2i'}</code></div>
+            <div><strong>Memo:</strong> {paymentRequest.memo}</div>
+            <div><strong>Your address:</strong> <code className="bg-white p-1 rounded">{paymentRequest.payer}</code></div>
+          </div>
+
+          <div className="mt-4">
+            <label className="block text-sm font-bold mb-1">Transaction Hash (after payment):</label>
+            <input
+              type="text"
+              value={txHash}
+              onChange={(e) => setTxHash(e.target.value)}
+              placeholder="th_..."
+              className="w-full p-2 border rounded"
+            />
+            <button
+              onClick={verifyPayment}
+              disabled={!txHash.trim()}
+              className="mt-2 w-full"
+            >
+              Verify Payment & Mint NFT
+            </button>
+          </div>
+
+          {paymentStatus && (
+            <div className="mt-2 p-2 bg-white rounded text-sm">
+              {paymentStatus}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
