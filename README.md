@@ -1,64 +1,80 @@
-# Æternity Gatekeeper — Hackathon Pack
+# Aeternity Gatekeeper
 
-> Single‑page kiosk (React + Vite) that play‑acts a Berlin‑style doorman, roasts lightly for ~2 minutes, then grants entry. Uses **Qwen3‑235B (free via OpenRouter)** for dialog, **in‑browser STT** (Web Speech API or Whisper WebGPU fallback), **browser TTS**, and a **Sophia contract** to mint a **non‑transferable Admit NFT** on æternity testnet (QR shows on‑chain proof).
+A Berlin-style bouncer chatbot that tests guests through conversation, analyzes their photo and website, then mints a soulbound NFT badge on the Aeternity blockchain.
 
----
+Built for the Aeternity hackathon.
 
-## Setup Instructions
+## Features
 
-### 1. Install Dependencies
+- Voice conversation with AI bouncer (Web Speech API)
+- Photo capture and analysis
+- Website scraping and summarization
+- Text-to-speech bouncer responses
+- Soulbound NFT minting on Aeternity testnet
+- QR code verification
 
-#### Frontend
+## Tech Stack
+
+**Frontend:** React 18, Vite, TypeScript
+**Backend:** Node.js, Express, TypeScript
+**AI:** Qwen3-VL-235B-A22B via OpenRouter
+**Blockchain:** Aeternity Sophia smart contract
+**Speech:** Web Speech API (recognition + synthesis)
+
+## Setup
+
+### 1. Deploy Sophia contract first
+
+1. Get testnet AE from https://faucet.aepps.com
+2. Go to https://studio.aepps.com
+3. Upload `/contracts/AdmitGatekeeper.aes`
+4. Deploy to testnet with your admin wallet address
+5. Copy the deployed contract address
+
+### 2. Install dependencies
+
 ```bash
+# Frontend
 cd frontend
 npm install
-```
 
-#### Backend
-```bash
+# Backend
 cd backend
 npm install
 ```
 
-### 2. Configure Environment Variables
+### 3. Configure environment
 
-#### Backend (`/backend/.env`)
-Copy `.env.example` to `.env` and fill in:
-
+**Backend (.env)**
 ```bash
+cd backend
 cp .env.example .env
 ```
 
-**Required API keys:**
-- `OPENROUTER_API_KEY` - Get from https://openrouter.ai/
-- `AE_PRIVATE_KEY` - Your Æternity wallet private key (testnet)
-- `AE_CONTRACT_ID` - Contract address after deploying `AdmitGatekeeper.aes`
-- `AE_NODE_URL` - Default: `https://testnet.aeternity.io`
+Required variables:
+- `OPENROUTER_API_KEY` - Get from https://openrouter.ai
+- `AE_PRIVATE_KEY` - Aeternity wallet private key (same wallet used to deploy contract)
+- `AE_NODE_URL` - https://testnet.aeternity.io
+- `AE_CONTRACT_ID` - Deployed contract address from step 1
+- `PORT` - 8787
 
-#### Frontend (`/frontend/.env`)
-Copy `.env.example` to `.env`:
-
+**Frontend (.env)**
 ```bash
+cd frontend
 cp .env.example .env
 ```
 
-Default: `VITE_BACKEND_URL=http://localhost:8787`
+Set `VITE_BACKEND_URL=http://localhost:8787`
 
-### 3. Deploy Sophia Contract
+### 4. Run servers
 
-1. Use [ÆStudio](https://studio.aepps.com/) or the Æternity SDK to deploy `/contracts/AdmitGatekeeper.aes`
-2. Initialize with your admin wallet address
-3. Copy the contract address to `AE_CONTRACT_ID` in backend `.env`
-
-### 4. Run the Application
-
-#### Start Backend (Terminal 1)
+**Terminal 1 - Backend:**
 ```bash
 cd backend
 npm run dev
 ```
 
-#### Start Frontend (Terminal 2)
+**Terminal 2 - Frontend:**
 ```bash
 cd frontend
 npm run dev
@@ -66,83 +82,56 @@ npm run dev
 
 Visit http://localhost:5173
 
----
-
-## API Keys You Need
-
-### 1. OpenRouter API Key (Required)
-- **Purpose:** Powers the AI bouncer conversation using Qwen3-235B (free tier)
-- **Get it:** https://openrouter.ai/
-- **Cost:** Free tier available
-- **Add to:** `backend/.env` as `OPENROUTER_API_KEY`
-
-### 2. Æternity Testnet Wallet (Required)
-- **Purpose:** Deploy contract and mint soulbound NFTs
-- **Get testnet AE:** https://faucet.aepps.com/
-- **Add to:** `backend/.env` as `AE_PRIVATE_KEY`
-
-### 3. Nano Banana API (Optional)
-- **Purpose:** Enhanced portrait stylization (if you have access)
-- **Default:** Uses local canvas-based stylization
-- **Only needed if:** You want AI-generated stylized portraits
-
----
-
-## Tech Stack
-
-- **Frontend:** React 18 + Vite + TypeScript
-- **Backend:** Node.js + Express + TypeScript
-- **LLM:** Qwen3-235B-A22B (free via OpenRouter)
-- **STT:** Web Speech API (primary) + Whisper.js (fallback)
-- **TTS:** Web Speech Synthesis API
-- **Blockchain:** Æternity Sophia smart contract (testnet)
-- **QR Code:** qrcode library
-
----
-
 ## Project Structure
 
 ```
-/ae-gatekeeper
-  /frontend
-    /src
-      /components      # React components
-      /hooks          # Custom hooks (STT, TTS)
-      /lib            # Utilities (AI, styling, QR)
-      App.tsx
-      main.tsx
-  /backend
-    server.ts         # Express API
-    .env.example
-  /contracts
-    AdmitGatekeeper.aes  # Sophia smart contract
+/
+├── frontend/
+│   ├── src/
+│   │   ├── components/    # React components
+│   │   ├── hooks/        # useSTT, useTTS
+│   │   └── lib/          # API clients, utilities
+│   └── package.json
+├── backend/
+│   ├── server.ts         # Express API
+│   └── package.json
+└── contracts/
+    └── AdmitGatekeeper.aes  # Sophia contract
 ```
 
----
+## API Endpoints
 
-## Features
+**POST /api/analyze-image** - Analyzes photo with vision model
+**POST /api/analyze-website** - Scrapes and summarizes website
+**POST /api/chat** - Sends messages to bouncer AI
+**POST /api/mint** - Mints soulbound NFT on Aeternity
 
-✅ Voice conversation with AI bouncer
-✅ Browser-based speech recognition (Web Speech + Whisper fallback)
-✅ Text-to-speech responses
-✅ Photo capture via webcam
-✅ Stylized portrait generation
-✅ Soulbound NFT minting on Æternity
-✅ QR code for on-chain verification
-✅ Printable badge
+## How It Works
 
----
+1. User enters name, website URL, and takes a photo
+2. Backend scrapes website and analyzes photo
+3. AI bouncer starts conversation using context
+4. User responds via text or voice input
+5. After 8-10 turns, bouncer decides acceptance
+6. Soulbound NFT badge minted on Aeternity testnet
+7. QR code generated for on-chain verification
 
 ## Troubleshooting
 
-- **STT not working on iOS?** Use the Whisper fallback (automatically triggered)
-- **Qwen returns 429?** You're hitting rate limits; slow down requests
-- **Æternity mint fails?** Check:
-  - `AE_CONTRACT_ID` is set correctly
-  - Your wallet has testnet AE (use faucet)
-  - Node URL is correct: `https://testnet.aeternity.io`
+**Voice not working?**
+- Requires HTTPS or localhost
+- Check browser permissions for microphone
+- Chrome/Edge recommended (best Web Speech API support)
 
----
+**OpenRouter errors?**
+- Check API key is valid
+- Verify you have credits (model costs ~$0.003 per conversation)
+- Rate limit: slow down requests if hitting 429
+
+**Aeternity mint fails?**
+- Ensure wallet has testnet AE (use faucet)
+- Verify `AE_CONTRACT_ID` is set correctly
+- Check node URL is `https://testnet.aeternity.io`
 
 ## License
 
