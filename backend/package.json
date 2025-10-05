@@ -1,0 +1,24 @@
+{
+  "name": "ae-gatekeeper-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon --exec ts-node-esm server.ts",
+    "start": "ts-node-esm server.ts"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "cors": "^2.8.5",
+    "node-fetch": "^3.3.2",
+    "dotenv": "^16.4.7",
+    "@aeternity/aepp-sdk": "^14.0.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "@types/cors": "^2.8.17",
+    "nodemon": "^3.1.9"
+  }
+}

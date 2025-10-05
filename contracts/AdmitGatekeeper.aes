@@ -1,0 +1,30 @@
+@compiler >= 7
+contract AdmitGatekeeper =
+
+  record token = { owner: address, score: int, handle_hash: string, card_uri: string, ts: int }
+  record state = { admin: address, next_id: int, tokens: map(int, token) }
+
+  entrypoint init(admin: address) =
+    { admin = admin, next_id = 1, tokens = {} }
+
+  function only_admin() =
+    if(Call.caller == state.admin) () else abort("NOT_ADMIN")
+
+  // Mint a non-transferable Admit "NFT" (soulbound)
+  stateful entrypoint mint_admit(owner': address, handle_hash': string, score': int, card_uri': string) : int =
+    only_admin()
+    let id = state.next_id
+    let t = { owner = owner', score = score', handle_hash = handle_hash', card_uri = card_uri', ts = Chain.timestamp }
+    put(state{ tokens[id] = t, next_id = id + 1 })
+    id
+
+  // Disallow transfer forever
+  entrypoint transfer(_to: address, _token_id: int) = abort("SOULBOUND")
+
+  entrypoint get_token(id: int) : token =
+    switch(Map.lookup(id, state.tokens))
+      None => abort("NO_TOKEN")
+      Some(t) => t
+
+  entrypoint owner_of(id: int) : address =
+    (get_token(id)).owner
